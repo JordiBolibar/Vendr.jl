@@ -1,0 +1,137 @@
+"""
+Phase 3 — gridded C inversion across a ladder of fixed A.
+
+A is pinned and the gridded C absorbs whatever deformation alone cannot explain, descending
+from the Cuffey & Paterson temperate value through the range used in the literature. The
+regularization multiplier is chosen from the Phase 2 sweep and passed in.
+
+Run with, defaulting to weertman and a multiplier of 1:
+    julia +1.11 --project=. inversions/03_real/32_invert_C_gridded/03_A_ladder.jl [law] [mult]
+"""
+
+include(joinpath(@__DIR__, "common.jl"))
+
+using CSV
+using DataFrames
+using JLD2
+
+mkpath(OUT_DIR)
+
+const LAW_NAME = length(ARGS) >= 1 ? Symbol(ARGS[1]) : :weertman
+const LAW = getproperty(SLIDING_LAWS, LAW_NAME)
+const MULT = length(ARGS) >= 2 ? parse(Float64, ARGS[2]) : 1.0
+
+const σ_H = 18.0
+const σ_V = 10.0
+const H_REF = 300.0
+
+# Fixed creep parameters, Pa⁻³ yr⁻¹, spanning the realistic range downwards
+const A_LADDER = [
+    ("temperate", A_TEMPERATE),   # Cuffey & Paterson (2010) at 0 °C, 7.57e-17
+    ("millan22", 4.0e-17),        # value Millan et al. used for their thickness product
+    ("A_2e-17", 2.0e-17),
+    ("A_1e-17", 1.0e-17),
+]
+
+C_scale = sliding_scale(LAW, A_TEMPERATE, H_REF)
+maxC = 8 * C_scale
+
+probe = build_params(; tspan = (2009.0, 2018.0), t₀ = 2009.0, maxC = maxC)
+glacier, series = prepare_glacier(probe)
+
+tspan = aligned_tspan(first(series.t), 2018.0, 1.0/12.0)
+t₀ = first(tspan)
+@assert all(tspan[1] .<= series.t .<= tspan[2]) "A glathida campaign falls outside the simulation window"
+
+glacier = Sleipnir.Glacier2D(glacier; thicknessData = series)
+glaciers = set_sliding_law!([glacier], LAW)
+
+ncells = prod(size(glacier.H₀) .- 1)
+λ_C = MULT * reference_λ(C_scale, glacier.Δx, ncells)
+
+@info "Ladder setup" LAW_NAME maxC λ_C mult=MULT tspan
+
+results = DataFrame(
+    law = String[], name = String[], A = Float64[], loss = Float64[],
+    C_mean = Float64[], C_median = Float64[], C_max = Float64[], frac_at_bound = Float64[],
+    slide_frac_mean = Float64[], slide_frac_median = Float64[],
+    v_rmse = Float64[], h_rmse = Float64[], seconds = Float64[],
+)
+
+C_fields = Dict{String, Matrix{Float64}}()
+
+V_ref = only(glacier.velocityData.vabs)
+mask_V = V_ref .> 0.0
+H_obs = last(series.H)
+mask_H = H_obs .!= 0
+
+for (name, A_value) in A_LADDER
+    @info "═══ $(LAW_NAME)  A = $(A_value)  ($(name)) ═══"
+
+    # maxC is kept fixed across the ladder so the C fields stay directly comparable, even
+    # though the sliding/deformation crossover moves as A changes
+    params = build_params(;
+        λ_H = 1/σ_H^2, λ_V = 1/σ_V^2, λ_C = λ_C, λ_H₀ = 1e-4,
+        maxC = maxC, tspan = tspan, t₀ = t₀,
+    )
+    model = build_model(params, glaciers, A_value)
+    inversion = Inversion(model, glaciers, params)
+
+    elapsed = @elapsed run!(inversion)
+
+    C = inverted_C(inversion)
+    frac = sliding_fraction(C, Huginn.inn1(glacier.H₀), A_value)
+
+    res = inversion.results.simulation[1]
+    v_rmse = sqrt(mean((res.V[end][mask_V] .- V_ref[mask_V]) .^ 2))
+    h_rmse = sqrt(mean((res.H[end][mask_H] .- H_obs[mask_H]) .^ 2))
+
+    push!(results, (
+        String(LAW_NAME), name, A_value, inversion.results.stats.loss[end],
+        mean(C), median(C), maximum(C), mean(C .> 0.95 * maxC),
+        mean(frac), median(frac), v_rmse, h_rmse, elapsed,
+    ))
+    C_fields[name] = C
+
+    @info "Result" A=A_value C_mean=mean(C) at_bound=mean(C .> 0.95*maxC) slide_frac=round(median(frac); digits=3) v_rmse=round(v_rmse; digits=2) seconds=round(elapsed; digits=1)
+
+    CSV.write(joinpath(OUT_DIR, "03_A_ladder_$(LAW_NAME).csv"), results)
+    jldsave(joinpath(OUT_DIR, "03_A_ladder_fields_$(LAW_NAME).jld2");
+        C_fields, ladder = A_LADDER, λ_C, maxC, law = LAW)
+
+    f = Figure(size = (1300, 450))
+    ax1 = Axis(f[1, 1], title = "C", aspect = DataAspect())
+    hm1 = heatmap!(ax1, C; colormap = :viridis)
+    Colorbar(f[1, 1], hm1; vertical = true, halign = :right, tellwidth = false)
+    ax2 = Axis(f[1, 2], title = "sliding fraction", aspect = DataAspect())
+    hm2 = heatmap!(ax2, frac; colormap = :magma, colorrange = (0, 1))
+    Colorbar(f[1, 2], hm2; vertical = true, halign = :right, tellwidth = false)
+    ax3 = Axis(f[1, 3], title = "V modelled − observed  (m/yr)", aspect = DataAspect())
+    dV = zeros(size(V_ref)); dV[mask_V] = res.V[end][mask_V] .- V_ref[mask_V]
+    hm3 = heatmap!(ax3, dV; colormap = :RdBu)
+    Colorbar(f[1, 3], hm3; vertical = true, halign = :right, tellwidth = false)
+    Label(f[0, :],
+        "$(LAW_NAME)   A = $(round(A_value*1e17; digits=2))e-17 ($(name))   |   V RMSE = $(round(v_rmse; digits=2)) m/yr";
+        fontsize = 17, font = :bold)
+    save(joinpath(OUT_DIR, "03_A_ladder_$(LAW_NAME)_$(name).pdf"), f)
+end
+
+fig = Figure(size = (400 * length(A_LADDER), 460))
+for (k, (name, A_value)) in enumerate(A_LADDER)
+    haskey(C_fields, name) || continue
+    ax = Axis(fig[1, k],
+        title = "$(name)\nA = $(round(A_value*1e17; digits=2))e-17", aspect = DataAspect())
+    hm = heatmap!(ax, C_fields[name]; colormap = :viridis)
+    Colorbar(fig[1, k], hm; vertical = true, halign = :right, tellwidth = false)
+end
+Label(fig[0, :], "Inverted C across the A ladder — $(RGI_ID), $(LAW_NAME)";
+    fontsize = 20, font = :bold)
+save(joinpath(OUT_DIR, "03_A_ladder_$(LAW_NAME)_comparison.pdf"), fig)
+
+fig2 = Figure(size = (900, 500))
+ax = Axis(fig2[1, 1], xlabel = "A  (Pa⁻³ yr⁻¹)", ylabel = "median sliding fraction",
+    xscale = log10, title = "Share of SIA diffusivity carried by sliding — $(LAW_NAME)")
+scatterlines!(ax, results.A, results.slide_frac_median; markersize = 14)
+save(joinpath(OUT_DIR, "03_A_ladder_$(LAW_NAME)_sliding_fraction.pdf"), fig2)
+
+println(results)
