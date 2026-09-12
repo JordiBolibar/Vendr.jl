@@ -106,6 +106,10 @@ function build_params(;
         gridScalingFactor::Int = 1,
         tspan::Tuple{Float64, Float64},
         t₀::Float64,
+        solver = Huginn.ROCK2(),
+        adaptive::Bool = true,
+        dt::Float64 = 1.0/120.0,
+        abstol::Float64 = 1e-3,
 )
     losses = Any[
         LossH(loss = L2Sum(distance = 0)),   # glathida is sparse: any erosion empties the mask
@@ -145,7 +149,19 @@ function build_params(;
                 losses = Tuple(losses), λs = Tuple(λs)),
             initial_condition_filter = :Zang1980,
         ),
-        solver = Huginn.SolverParameters(step = 1.0/12.0),
+        # `InterpolatingAdjoint` is not stable in backward mode with the SIA, so the solver
+        # has to be an explicit stabilized one. `SolverParameters` defaults to `RDPK3Sp35`,
+        # which is not, and `with_eigen_est` only rewrites ROCK2/ROCK4, so leaving the
+        # default silently runs an unstabilized method on both passes and the gradient comes
+        # back wrong with a healthy looking norm. Gradient checks additionally need
+        # `adaptive = false`: adaptive stepping makes the solution discontinuous in θ and the
+        # finite differences then measure step acceptance jitter instead of a derivative.
+        # `abstol` is the accuracy the gradient inherits: at the 1e-3 default the direction is
+        # perturbed a couple of degrees, which is fine for an optimiser but too loose to check
+        # an adjoint against finite differences. Tighten it for gradient checks.
+        solver = Huginn.SolverParameters(
+            step = 1.0/12.0, solver = solver, adaptive = adaptive, dt = dt,
+            abstol = abstol),
     )
 end
 
@@ -171,14 +187,14 @@ Build the inversion model: fixed scalar A, gridded trainable C, free H₀.
 
 `target` is left at its default since only the manual adjoints use it.
 """
-function build_model(params, glaciers, A_value::Float64)
+function build_model(params, glaciers, A_value::Float64; mass_balance = TImodel1(params))
     iceflow = SIA2Dmodel(params;
         A = Huginn.ConstantA(A_value),
         C = LawC(params; scalar = false),
     )
     return Model(
         iceflow = iceflow,
-        mass_balance = TImodel1(params),
+        mass_balance = mass_balance,
         regressors = (;
             C = GriddedInv(params, glaciers, :C),
             IC = InitialCondition(params, glaciers, :Millan22),

@@ -5,8 +5,11 @@ Points Vendr at the locally cloned ODINN-ecosystem packages. Huginn and Muninn a
 straight from `feature/mb-continuous-rhs`; ODINN and Sleipnir are used from the worktrees
 that carry the two features this campaign needs, both branched off `feature/mb-continuous-rhs`:
 
-  - ODINN    `feature/sliding-regularization`  spatial regularization of a gridded C
+  - ODINN    `feature/sliding-regularization`  spatial regularization of a gridded C,
+                                               plus the ported V_from_H rrule
   - Sleipnir `feature/glathida-transient`      date aware glathida ingestion
+  - Huginn   `feature/lossv-inplace`           surface_V_inplace!, the Enzyme target of
+                                               the velocity VJP
 
 Mass balance must be a continuous source term of the ice flow RHS for
 `SciMLSensitivityAdjoint` to differentiate a transient run with MB, which is what
@@ -22,7 +25,7 @@ t0 = time()
 Pkg.develop([
     PackageSpec(path = joinpath(DEPS, "worktrees", "sleipnir-glathida-transient")),
     PackageSpec(path = joinpath(DEPS, "Muninn")),
-    PackageSpec(path = joinpath(DEPS, "Huginn")),
+    PackageSpec(path = joinpath(DEPS, "worktrees", "huginn-lossv-inplace")),
     PackageSpec(path = joinpath(DEPS, "worktrees", "odinn-sliding-reg")),
 ])
 
