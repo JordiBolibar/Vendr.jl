@@ -102,6 +102,14 @@ for mult in MULTIPLIERS
 
     C = inverted_C(inversion)
     frac = sliding_fraction(C, Huginn.inn1(glacier.H₀), A_TEMPERATE)
+    # Every C statistic is taken over cells that carry ice. Over the full grid they are
+    # meaningless: most staggered cells are ice free, contribute to no loss term, keep their
+    # seed forever, and make `sliding_fraction` return exactly 1 because deformation is 0
+    # there. `roughness`/`reg_C` stay unmasked, since the loss computes them over the whole
+    # grid. See `ice_mask_C` in common.jl.
+    msk = ice_mask_C(glacier)
+    Cm = C[msk]
+    fracm = frac[msk]
 
     res = inversion.results.simulation[1]
     v_rmse = sqrt(mean((res.V[end][mask_V] .- V_ref[mask_V]) .^ 2))
@@ -127,12 +135,12 @@ for mult in MULTIPLIERS
 
     push!(results, (
         String(LAW_NAME), mult, λ_C, loss_total,
-        mean(C), median(C), maximum(C), mean(C .> 0.95 * maxC),
+        mean(Cm), median(Cm), maximum(Cm), mean(Cm .> 0.95 * maxC),
         rough, reg_C, reg_frac, median(frac), v_rmse, h_rmse, elapsed,
     ))
     C_fields[mult] = C
 
-    @info "Done" mult C_mean=mean(C) at_bound=mean(C .> 0.95*maxC) slide_frac=round(median(frac); digits=3) v_rmse=round(v_rmse; digits=2) reg_frac seconds=round(elapsed; digits=1)
+    @info "Done" mult C_mean=mean(Cm) at_bound=mean(Cm .> 0.95*maxC) slide_frac=round(median(fracm); digits=3) v_rmse=round(v_rmse; digits=2) reg_frac seconds=round(elapsed; digits=1)
 
     CSV.write(joinpath(OUT_DIR, "02_lambda_sweep_$(TAG).csv"), results)
     jldsave(joinpath(OUT_DIR, "02_lambda_fields_$(TAG).jld2");

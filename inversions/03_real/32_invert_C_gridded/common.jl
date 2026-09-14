@@ -214,6 +214,21 @@ function inverted_C(inversion, glacier_idx::Integer = 1)
 end
 
 """
+    ice_mask_C(glacier)
+
+Staggered mask of cells that carry ice, matching the shape of the inverted `C`.
+
+Every C statistic has to be taken over this, not over the whole grid. More than half the
+staggered cells are ice free: they contribute to no loss term, so their gradient is exactly
+zero and they keep their seed forever. Averaged in, they make `C_mean`/`C_median` report the
+seed value rather than anything the inversion did, and they make `sliding_fraction` return
+exactly 1 (deformation is `2AH/(n+2)`, which is 0 when `H` is 0, so the ratio is `C/C`).
+That combination produced a confident and completely wrong reading of the first sweep:
+"the median cell is 100% sliding". Where there is ice the fraction was ~4e-4.
+"""
+ice_mask_C(glacier) = Huginn.inn1(glacier.H₀) .> 0.0
+
+"""
     sliding_fraction(C, H, A, n = 3)
 
 Share of the SIA diffusivity due to sliding rather than deformation.

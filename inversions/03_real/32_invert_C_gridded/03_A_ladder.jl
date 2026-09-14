@@ -92,6 +92,14 @@ for (name, A_value) in A_LADDER
 
     C = inverted_C(inversion)
     frac = sliding_fraction(C, Huginn.inn1(glacier.H₀), A_value)
+    # Every C statistic is taken over cells that carry ice. Over the full grid they are
+    # meaningless: most staggered cells are ice free, contribute to no loss term, keep their
+    # seed forever, and make `sliding_fraction` return exactly 1 because deformation is 0
+    # there. `roughness`/`reg_C` stay unmasked, since the loss computes them over the whole
+    # grid. See `ice_mask_C` in common.jl.
+    msk = ice_mask_C(glacier)
+    Cm = C[msk]
+    fracm = frac[msk]
 
     # The regularization term as the loss computes it (`sum((∇²C)²)` over an all-true mask,
     # once, at t = tspan[1]), not as a mean. `reg_frac` is what transfers across resolutions:
@@ -107,13 +115,13 @@ for (name, A_value) in A_LADDER
 
     push!(results, (
         String(LAW_NAME), name, A_value, loss_total,
-        mean(C), median(C), maximum(C), mean(C .> 0.95 * maxC),
+        mean(Cm), median(Cm), maximum(Cm), mean(Cm .> 0.95 * maxC),
         reg_C, reg_frac,
-        mean(frac), median(frac), v_rmse, h_rmse, elapsed,
+        mean(fracm), median(fracm), v_rmse, h_rmse, elapsed,
     ))
     C_fields[name] = C
 
-    @info "Result" A=A_value C_mean=mean(C) at_bound=mean(C .> 0.95*maxC) slide_frac=round(median(frac); digits=3) v_rmse=round(v_rmse; digits=2) seconds=round(elapsed; digits=1)
+    @info "Result" A=A_value C_mean=mean(Cm) at_bound=mean(Cm .> 0.95*maxC) slide_frac=round(median(fracm); digits=3) v_rmse=round(v_rmse; digits=2) seconds=round(elapsed; digits=1)
 
     CSV.write(joinpath(OUT_DIR, "03_A_ladder_$(TAG).csv"), results)
     jldsave(joinpath(OUT_DIR, "03_A_ladder_fields_$(TAG).jld2");
