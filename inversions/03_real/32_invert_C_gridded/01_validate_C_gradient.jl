@@ -60,7 +60,12 @@ params = Parameters(
     # invalidates finite differences. It is kept here because a fixed step run leaves
     # tstops missing from solution.t and indFromT then returns nothing, and because the
     # discrepancy being tested spans tens of orders of magnitude, far above step noise.
-    solver = Huginn.SolverParameters(step = 1.0/12.0),
+    # ROCK2, explicitly. `SolverParameters` defaults to `RDPK3Sp35`, an unstabilized explicit
+    # method, and `with_eigen_est` only rewrites ROCK2/ROCK4 — so leaving the solver unnamed
+    # ran an unstabilized method on a stiff parabolic problem in both directions. That is what
+    # produced the NaN adjoint here (backward solve aborting at t=2009.406, step error 9.8e9),
+    # and elsewhere a wrong-sign gradient with a healthy-looking norm and no NaNs. See 20583a0.
+    solver = Huginn.SolverParameters(step = 1.0/12.0, solver = Huginn.ROCK2()),
 )
 
 glaciers = initialize_glaciers([RGI_ID], params)
