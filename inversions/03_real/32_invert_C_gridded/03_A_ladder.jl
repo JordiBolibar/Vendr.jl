@@ -20,6 +20,14 @@ mkpath(OUT_DIR)
 const LAW_NAME = length(ARGS) >= 1 ? Symbol(ARGS[1]) : :weertman
 const LAW = getproperty(SLIDING_LAWS, LAW_NAME)
 const MULT = length(ARGS) >= 2 ? parse(Float64, ARGS[2]) : 1.0
+# Resolution and epoch budget as arguments, as in `02_lambda_sweep.jl`. Full resolution costs
+# roughly 24x the forward solve of gsf 3 (outputs/00b_perf_profile.csv), so the ladder is run
+# coarse first and at production settings once λ_C is settled.
+const GSF = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 1
+const EPOCHS = length(ARGS) >= 4 ? parse.(Int, split(ARGS[4], ",")) : [10, 20]
+@assert length(EPOCHS)==2 "epochs must match the two optimizers in build_params, e.g. 10,20"
+# Tagged so an exploratory run cannot overwrite a production one.
+const TAG = "$(LAW_NAME)_gsf$(GSF)_ep$(join(EPOCHS, "-"))_mult$(MULT)"
 
 const σ_H = 18.0
 const σ_V = 10.0
@@ -36,7 +44,8 @@ const A_LADDER = [
 C_scale = sliding_scale(LAW, A_TEMPERATE, H_REF)
 maxC = 8 * C_scale
 
-probe = build_params(; tspan = (2009.0, 2018.0), t₀ = 2009.0, maxC = maxC)
+probe = build_params(; tspan = (2009.0, 2018.0), t₀ = 2009.0, maxC = maxC,
+    gridScalingFactor = GSF)
 glacier, series = prepare_glacier(probe)
 
 tspan = aligned_tspan(first(series.t), 2018.0, 1.0/12.0)
@@ -54,6 +63,7 @@ ncells = prod(size(glacier.H₀) .- 1)
 results = DataFrame(
     law = String[], name = String[], A = Float64[], loss = Float64[],
     C_mean = Float64[], C_median = Float64[], C_max = Float64[], frac_at_bound = Float64[],
+    reg_C = Float64[], reg_frac = Float64[],
     slide_frac_mean = Float64[], slide_frac_median = Float64[],
     v_rmse = Float64[], h_rmse = Float64[], seconds = Float64[],
 )
@@ -73,6 +83,7 @@ for (name, A_value) in A_LADDER
     params = build_params(;
         λ_H = 1/σ_H^2, λ_V = 1/σ_V^2, λ_C = λ_C, λ_H₀ = 1e-4,
         maxC = maxC, tspan = tspan, t₀ = t₀,
+        gridScalingFactor = GSF, epochs = EPOCHS,
     )
     model = build_model(params, glaciers, A_value)
     inversion = Inversion(model, glaciers, params)
@@ -82,21 +93,30 @@ for (name, A_value) in A_LADDER
     C = inverted_C(inversion)
     frac = sliding_fraction(C, Huginn.inn1(glacier.H₀), A_value)
 
+    # The regularization term as the loss computes it (`sum((∇²C)²)` over an all-true mask,
+    # once, at t = tspan[1]), not as a mean. `reg_frac` is what transfers across resolutions:
+    # a multiplier calibrated at one grid does not, since λ_ref ∝ Δx⁶ while the penalty for a
+    # C with fixed physical correlation length scales as Δx⁻². Match `reg_frac`, not `mult`.
+    reg_C = λ_C * sum(ODINN.∇²(C, glacier.Δx, glacier.Δy) .^ 2)
+    loss_total = inversion.results.stats.losses[end]
+    reg_frac = reg_C / max(abs(loss_total), eps())
+
     res = inversion.results.simulation[1]
     v_rmse = sqrt(mean((res.V[end][mask_V] .- V_ref[mask_V]) .^ 2))
     h_rmse = sqrt(mean((res.H[end][mask_H] .- H_obs[mask_H]) .^ 2))
 
     push!(results, (
-        String(LAW_NAME), name, A_value, inversion.results.stats.loss[end],
+        String(LAW_NAME), name, A_value, loss_total,
         mean(C), median(C), maximum(C), mean(C .> 0.95 * maxC),
+        reg_C, reg_frac,
         mean(frac), median(frac), v_rmse, h_rmse, elapsed,
     ))
     C_fields[name] = C
 
     @info "Result" A=A_value C_mean=mean(C) at_bound=mean(C .> 0.95*maxC) slide_frac=round(median(frac); digits=3) v_rmse=round(v_rmse; digits=2) seconds=round(elapsed; digits=1)
 
-    CSV.write(joinpath(OUT_DIR, "03_A_ladder_$(LAW_NAME).csv"), results)
-    jldsave(joinpath(OUT_DIR, "03_A_ladder_fields_$(LAW_NAME).jld2");
+    CSV.write(joinpath(OUT_DIR, "03_A_ladder_$(TAG).csv"), results)
+    jldsave(joinpath(OUT_DIR, "03_A_ladder_fields_$(TAG).jld2");
         C_fields, ladder = A_LADDER, λ_C, maxC, law = LAW)
 
     f = Figure(size = (1300, 450))
@@ -113,7 +133,7 @@ for (name, A_value) in A_LADDER
     Label(f[0, :],
         "$(LAW_NAME)   A = $(round(A_value*1e17; digits=2))e-17 ($(name))   |   V RMSE = $(round(v_rmse; digits=2)) m/yr";
         fontsize = 17, font = :bold)
-    save(joinpath(OUT_DIR, "03_A_ladder_$(LAW_NAME)_$(name).pdf"), f)
+    save(joinpath(OUT_DIR, "03_A_ladder_$(TAG)_$(name).pdf"), f)
 end
 
 fig = Figure(size = (400 * length(A_LADDER), 460))
@@ -126,12 +146,12 @@ for (k, (name, A_value)) in enumerate(A_LADDER)
 end
 Label(fig[0, :], "Inverted C across the A ladder — $(RGI_ID), $(LAW_NAME)";
     fontsize = 20, font = :bold)
-save(joinpath(OUT_DIR, "03_A_ladder_$(LAW_NAME)_comparison.pdf"), fig)
+save(joinpath(OUT_DIR, "03_A_ladder_$(TAG)_comparison.pdf"), fig)
 
 fig2 = Figure(size = (900, 500))
 ax = Axis(fig2[1, 1], xlabel = "A  (Pa⁻³ yr⁻¹)", ylabel = "median sliding fraction",
     xscale = log10, title = "Share of SIA diffusivity carried by sliding — $(LAW_NAME)")
 scatterlines!(ax, results.A, results.slide_frac_median; markersize = 14)
-save(joinpath(OUT_DIR, "03_A_ladder_$(LAW_NAME)_sliding_fraction.pdf"), fig2)
+save(joinpath(OUT_DIR, "03_A_ladder_$(TAG)_sliding_fraction.pdf"), fig2)
 
 println(results)
