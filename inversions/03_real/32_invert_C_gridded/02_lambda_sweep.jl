@@ -61,7 +61,7 @@ t₀ = first(tspan)
 @assert all(tspan[1] .<= series.t .<= tspan[2]) "A glathida campaign falls outside the simulation window"
 
 glacier = Sleipnir.Glacier2D(glacier; thicknessData = series)
-glaciers = set_sliding_law!([glacier], LAW)
+glaciers = set_sliding_law!([glacier], LAW, 0.1 * maxC)
 
 ncells = prod(size(glacier.H₀) .- 1)
 λ_ref = reference_λ(C_scale, glacier.Δx, ncells)

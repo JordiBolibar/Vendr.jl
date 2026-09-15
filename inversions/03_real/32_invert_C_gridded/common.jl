@@ -71,14 +71,27 @@ function aligned_tspan(t_first_obs::Float64, t_end::Float64, step_MB::Float64)
 end
 
 """
-    set_sliding_law!(glaciers, law)
+    set_sliding_law!(glaciers, law, C0)
 
-Set the sliding exponents of each glacier, which the default `p` and `q` laws read.
+Set the sliding exponents of each glacier, which the default `p` and `q` laws read, and seed
+`glacier.C`, which `GriddedInv` fills the whole gridded θ.C field from.
+
+`C0` is required rather than defaulted. `glacier.C` defaults to 0.0 in Sleipnir, and C = 0
+maps to the GriddedInv seed θ = -5, which is also the flattest point of the tanh
+parameterization: `dC/dθ = maxC*sech²(5)/2`, about 7e-5 of its maximum. Starting there, the
+loss is nearly flat in θ across the whole grid and the optimizer barely moves -- on the
+Aletsch campaign the loss moved 0.5% in 15 iterations and LBFGS's line search gave up after
+about 5, regardless of its epoch budget, while every reported C statistic sat at the seed
+value. Nothing errors, so it looks converged rather than broken.
+
+`C0` should be inside (0, maxC); 0.1*maxC is the value the gradient gate
+(`01_validate_C_gradient.jl`) validates against.
 """
-function set_sliding_law!(glaciers, law)
+function set_sliding_law!(glaciers, law, C0::Float64)
     for glacier in glaciers
         glacier.p = law.p
         glacier.q = law.q
+        glacier.C = C0
     end
     return glaciers
 end

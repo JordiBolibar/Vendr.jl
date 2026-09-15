@@ -69,12 +69,9 @@ params = Parameters(
 )
 
 glaciers = initialize_glaciers([RGI_ID], params)
-set_sliding_law!(glaciers, law)
+set_sliding_law!(glaciers, law, 0.1 * maxC)
 glacier = only(glaciers)
 @info "Setup" grid=size(glacier.H₀) maxC C_scale tspan=TSPAN
-
-# Seed C well inside the range so the tanh derivative does not vanish
-glacier.C = 0.1 * maxC
 
 # No mass balance: with use_MB=false the raw climate only spans tspan, so calibrating a
 # TImodel1 inside the Inversion constructor would fail on the Hugonnet window

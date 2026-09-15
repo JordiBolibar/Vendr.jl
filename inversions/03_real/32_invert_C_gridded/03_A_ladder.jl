@@ -33,12 +33,17 @@ const σ_H = 18.0
 const σ_V = 10.0
 const H_REF = 300.0
 
-# Fixed creep parameters, Pa⁻³ yr⁻¹, spanning the realistic range downwards
+# Fixed creep parameters, Pa⁻³ yr⁻¹, read straight off the same fitted polynomial
+# A_TEMPERATE comes from (Huginn.polyA_PatersonCuffey(), Laws.jl), rather than hand-transcribed
+# decimals: 0 to -20 °C spans 7.57e-17 down to 3.79e-18, about 20x, all real Cuffey & Paterson
+# (2010) table entries rather than round numbers that happen to fall between rows.
+const A_POLY = Huginn.polyA_PatersonCuffey()
 const A_LADDER = [
-    ("temperate", A_TEMPERATE),   # Cuffey & Paterson (2010) at 0 °C, 7.57e-17
-    ("millan22", 4.0e-17),        # value Millan et al. used for their thickness product
-    ("A_2e-17", 2.0e-17),
-    ("A_1e-17", 1.0e-17),
+    ("temperate", A_TEMPERATE),   # Cuffey & Paterson at 0 °C   -- matches A_POLY(0.0)
+    ("m5C", A_POLY(-5.0)),        # Cuffey & Paterson at -5 °C
+    ("m10C", A_POLY(-10.0)),      # Cuffey & Paterson at -10 °C
+    ("m15C", A_POLY(-15.0)),      # Cuffey & Paterson at -15 °C
+    ("m20C", A_POLY(-20.0)),      # Cuffey & Paterson at -20 °C
 ]
 
 C_scale = sliding_scale(LAW, A_TEMPERATE, H_REF)
@@ -53,7 +58,7 @@ t₀ = first(tspan)
 @assert all(tspan[1] .<= series.t .<= tspan[2]) "A glathida campaign falls outside the simulation window"
 
 glacier = Sleipnir.Glacier2D(glacier; thicknessData = series)
-glaciers = set_sliding_law!([glacier], LAW)
+glaciers = set_sliding_law!([glacier], LAW, 0.1 * maxC)
 
 ncells = prod(size(glacier.H₀) .- 1)
 λ_C = MULT * reference_λ(C_scale, glacier.Δx, ncells)
