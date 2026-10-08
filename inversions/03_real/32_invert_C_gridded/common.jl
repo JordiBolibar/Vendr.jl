@@ -18,8 +18,62 @@ using Dates
 const RGI_ID = "RGI60-11.01450"   # Aletsch
 const OUT_DIR = joinpath(@__DIR__, "outputs")
 
+"""
+    run_dir(script, tag, subdir...) -> String
+
+Directory for one run's outputs, created if needed: `outputs/<script>/<tag>/<subdir...>`.
+
+Everything used to land flat in `outputs/` under names like
+`02_lambda_sweep_weertman_gsf3_ep10-20_mult100.0.pdf`, which put every run of every script
+in one listing and forced the whole configuration into each filename. One directory per run
+means the files inside can be named for what they are (`lcurve.pdf`, `summary.csv`), runs
+can be compared side by side, and a stale run is deleted by removing one directory.
+"""
+function run_dir(script::AbstractString, tag::AbstractString, subdir::AbstractString...)
+    dir = joinpath(OUT_DIR, script, tag, subdir...)
+    mkpath(dir)
+    return dir
+end
+
+"""
+    out_path(dir, name) -> String
+
+Path to `name` inside `dir`, with `dir` created if needed. Companion to [`run_dir`](@ref)
+for the one-off case where the directory is already known.
+"""
+function out_path(dir::AbstractString, name::AbstractString)
+    mkpath(dir)
+    return joinpath(dir, name)
+end
+
 # Cuffey & Paterson (2010) temperate ice, in Pa⁻³ yr⁻¹. This is `Huginn.TemperateA()`.
 const A_TEMPERATE = Huginn.polyA_PatersonCuffey()(0.0)
+
+# Fixed creep parameters, Pa⁻³ yr⁻¹, read straight off the same fitted polynomial rather than
+# hand-transcribed decimals: 0 to -20 °C spans 7.57e-17 down to 3.79e-18, about 20x, all real
+# Cuffey & Paterson (2010) table entries rather than round numbers that happen to fall between
+# rows. Shared between `02_lambda_sweep.jl` and `03_A_ladder.jl` so a rung name (e.g. "m15C")
+# means the same A in both.
+const A_POLY = Huginn.polyA_PatersonCuffey()
+const A_LADDER = [
+    ("temperate", A_TEMPERATE),   # Cuffey & Paterson at 0 °C   -- matches A_POLY(0.0)
+    ("m5C", A_POLY(-5.0)),        # Cuffey & Paterson at -5 °C
+    ("m10C", A_POLY(-10.0)),      # Cuffey & Paterson at -10 °C
+    ("m15C", A_POLY(-15.0)),      # Cuffey & Paterson at -15 °C
+    ("m20C", A_POLY(-20.0)),      # Cuffey & Paterson at -20 °C
+]
+
+"""
+    A_from_name(name::AbstractString) -> Float64
+
+Look up an `A_LADDER` rung by name, e.g. `"temperate"` or `"m15C"`.
+"""
+function A_from_name(name::AbstractString)
+    idx = findfirst(r -> r[1] == name, A_LADDER)
+    isnothing(idx) && throw(ArgumentError(
+        "unknown A rung \"$(name)\"; choose one of $(first.(A_LADDER))"))
+    return A_LADDER[idx][2]
+end
 
 # Sliding laws, as (p, q) of u_b = C τ_b^p / N^q. Weertman is the primary here: Gilbert
 # et al. (2023) constrain m = 3.1 ± 0.3 on hard bedded Argentière and find Weertman
@@ -28,21 +82,6 @@ const SLIDING_LAWS = (
     weertman = (p = 3.0, q = 0.0),
     budd = (p = 3.0, q = 2.0),
 )
-
-"""
-    sliding_scale(law, A, H; ρg = 900 * 9.81, n = 3)
-
-Value of `C` at which sliding and deformation contribute equally to the SIA diffusivity.
-
-Huginn splits the diffusivity as `C(ρg)^(p-q) H^(p-q+1) ∇S^(p-1)` against
-`2A(ρg)ⁿHⁿ⁺²∇Sⁿ⁻¹/(n+2)`, so the crossover depends on the sliding law and sets both the
-bound on `C` and the scale of its regularization. The `∇S` powers cancel when `p-1 = n-1`.
-"""
-function sliding_scale(law, A::Float64, H::Float64; ρg::Float64 = 900.0*9.81, n::Float64 = 3.0)
-    deformation = 2 * A * ρg^n * H^(n + 2) / (n + 2)
-    sliding_unit_C = ρg^(law.p - law.q) * H^(law.p - law.q + 1)
-    return deformation / sliding_unit_C
-end
 
 """
     reference_λ(scale, Δx, ncells; target = 0.1)
@@ -97,13 +136,37 @@ function set_sliding_law!(glaciers, law, C0::Float64)
 end
 
 """
+    adam_lr(gridScalingFactor; lr_ref = 0.05, gsf_ref = 3)
+
+Adam learning rate for a gridded (per-cell) parameter, scaled to the grid resolution.
+
+`θ.C`/`θ.IC` are pointwise samples of a continuum field, so their discrete adjoint gradient
+carries an explicit cell-area factor: `∂L/∂θ[i,j] = ℓ'(θ[i,j])·ΔxΔy`, shrinking like `Δx²`
+under grid refinement for a fixed underlying sensitivity. Adam's step is `lr·m̂/√v̂ ≈ lr·sign(g)`
+by construction -- essentially independent of the gradient's own magnitude -- so it does not
+shrink on its own the way a magnitude-respecting update would. Left uncorrected, refining the
+grid makes Adam's step disproportionately large relative to what the resolution can absorb by
+exactly the missing `Δx²` factor: at `gridScalingFactor=1`, C froze at its seed and training
+destabilized (loss up to 16x worse within a few epochs) with the flat `lr_ref` this replaces.
+
+`Δx ∝ gridScalingFactor` (coarsening block-averages by that factor), so the correction is
+expressed directly in terms of it. `gsf_ref = 3` is the resolution `lr_ref` was validated at.
+"""
+function adam_lr(gridScalingFactor::Integer; lr_ref::Float64 = 0.05, gsf_ref::Integer = 3)
+    return lr_ref * (gridScalingFactor / gsf_ref)^2
+end
+
+"""
     build_params(; λs..., epochs, maxC, gridScalingFactor, tspan, t₀)
 
 Build the `Parameters` of one scenario.
 
 `maxC` has to be passed explicitly because its scale depends on the sliding law, see
-[`sliding_scale`](@ref). The Sleipnir default of 8e-17 is only meaningful for a Weertman
+`Huginn.sliding_scale`. The Sleipnir default of 8e-17 is only meaningful for a Weertman
 law and is many orders off for the default Budd one.
+
+`optimizer` defaults to Adam at a `gridScalingFactor`-scaled learning rate (see
+[`adam_lr`](@ref)) followed by LBFGS; pass it explicitly to override.
 """
 function build_params(;
         λ_H::Float64 = 1.0,
@@ -111,10 +174,7 @@ function build_params(;
         λ_C::Float64 = 0.0,
         λ_H₀::Float64 = 1e-4,
         epochs = [10, 20],
-        optimizer = [
-            ODINN.Adam(0.05),
-            ODINN.LBFGS(linesearch = ODINN.LineSearches.BackTracking(iterations = 5)),
-        ],
+        optimizer = nothing,
         maxC::Float64 = 2e-14,
         gridScalingFactor::Int = 1,
         tspan::Tuple{Float64, Float64},
@@ -124,6 +184,12 @@ function build_params(;
         dt::Float64 = 1.0/120.0,
         abstol::Float64 = 1e-3,
 )
+    if isnothing(optimizer)
+        optimizer = [
+            ODINN.Adam(adam_lr(gridScalingFactor)),
+            ODINN.LBFGS(linesearch = ODINN.LineSearches.BackTracking(iterations = 5)),
+        ]
+    end
     losses = Any[
         LossH(loss = L2Sum(distance = 0)),   # glathida is sparse: any erosion empties the mask
         LossAvgV(),
@@ -234,22 +300,10 @@ Staggered mask of cells that carry ice, matching the shape of the inverted `C`.
 Every C statistic has to be taken over this, not over the whole grid. More than half the
 staggered cells are ice free: they contribute to no loss term, so their gradient is exactly
 zero and they keep their seed forever. Averaged in, they make `C_mean`/`C_median` report the
-seed value rather than anything the inversion did, and they make `sliding_fraction` return
-exactly 1 (deformation is `2AH/(n+2)`, which is 0 when `H` is 0, so the ratio is `C/C`).
-That combination produced a confident and completely wrong reading of the first sweep:
-"the median cell is 100% sliding". Where there is ice the fraction was ~4e-4.
+seed value rather than anything the inversion did. `Huginn.sliding_fraction` already returns
+`NaN` on ice-free cells for the same reason (it used to return exactly 1: `deformation = 0`
+when `H = 0` makes the ratio `C/C`, which produced a confident and completely wrong reading
+of the first sweep — "the median cell is 100% sliding". Where there is ice the fraction was
+~4e-4), but every *other* C statistic still needs this mask explicitly.
 """
 ice_mask_C(glacier) = Huginn.inn1(glacier.H₀) .> 0.0
-
-"""
-    sliding_fraction(C, H, A, n = 3)
-
-Share of the SIA diffusivity due to sliding rather than deformation.
-
-In `D = (C + 2AH/(n+2))(ρg)ⁿHⁿ⁺¹‖∇S‖ⁿ⁻¹` the split only depends on `C` against `2AH/(n+2)`,
-so this tells whether a recovered C matters dynamically or is just non-zero.
-"""
-function sliding_fraction(C, H, A::Float64; n::Float64 = 3.0)
-    deformation = @. 2 * A * H / (n + 2)
-    return @. C / (C + deformation)
-end

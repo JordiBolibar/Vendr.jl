@@ -34,7 +34,7 @@ const FD_DELTAS = [1e-4, 1e-5]
 Random.seed!(1234)
 
 law = SLIDING_LAWS.weertman
-C_scale = sliding_scale(law, A_TEMPERATE, 300.0)
+C_scale = Huginn.sliding_scale(A_TEMPERATE, 300.0; p = law.p, q = law.q)
 maxC = 8 * C_scale
 
 params = Parameters(

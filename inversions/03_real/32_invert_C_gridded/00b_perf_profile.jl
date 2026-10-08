@@ -15,7 +15,7 @@ using Printf
 using Statistics
 
 const RGI_ID = "RGI60-11.01450"
-const OUT_DIR = joinpath(@__DIR__, "outputs")
+const OUT_DIR = joinpath(@__DIR__, "outputs", "00b_perf_profile")
 mkpath(OUT_DIR)
 
 function make_params(; use_MB, tspan, gsf, step = 1.0/12.0)
@@ -84,7 +84,7 @@ for step in (1.0/12.0, 1.0/4.0, 1.0)
     @printf("  step=%-8.4f       cells=%6d  %7.2f s\n", step, n, t)
 end
 
-open(joinpath(OUT_DIR, "00b_perf_profile.csv"), "w") do io
+open(joinpath(OUT_DIR, "perf_profile.csv"), "w") do io
     println(io, "config,cells,seconds")
     for (label, cells, t) in rows
         println(io, "$(label),$(cells),$(round(t; digits = 3))")

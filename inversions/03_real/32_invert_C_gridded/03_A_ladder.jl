@@ -15,38 +15,30 @@ using CSV
 using DataFrames
 using JLD2
 
-mkpath(OUT_DIR)
-
 const LAW_NAME = length(ARGS) >= 1 ? Symbol(ARGS[1]) : :weertman
 const LAW = getproperty(SLIDING_LAWS, LAW_NAME)
 const MULT = length(ARGS) >= 2 ? parse(Float64, ARGS[2]) : 1.0
 # Resolution and epoch budget as arguments, as in `02_lambda_sweep.jl`. Full resolution costs
-# roughly 24x the forward solve of gsf 3 (outputs/00b_perf_profile.csv), so the ladder is run
+# roughly 24x the forward solve of gsf 3 (outputs/00b_perf_profile/perf_profile.csv), so the ladder is run
 # coarse first and at production settings once λ_C is settled.
 const GSF = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 1
 const EPOCHS = length(ARGS) >= 4 ? parse.(Int, split(ARGS[4], ",")) : [10, 20]
 @assert length(EPOCHS)==2 "epochs must match the two optimizers in build_params, e.g. 10,20"
-# Tagged so an exploratory run cannot overwrite a production one.
+# Tagged so an exploratory run cannot overwrite a production one; the tag is the run's
+# directory name (see `run_dir` in common.jl), not a filename suffix.
 const TAG = "$(LAW_NAME)_gsf$(GSF)_ep$(join(EPOCHS, "-"))_mult$(MULT)"
+const RUN_DIR = run_dir("03_A_ladder", TAG)
+const FIELDS_DIR = run_dir("03_A_ladder", TAG, "fields")
+const RUNGS_DIR = run_dir("03_A_ladder", TAG, "rungs")
 
-const σ_H = 18.0
-const σ_V = 10.0
+const σ_H = 18.0    # m, from the glathida repeat surveys
+# σ_V is set from glacier.velocityData.vabs_error below, once the glacier is loaded --
+# real Millan22 uncertainty if the cache has it, a labelled placeholder otherwise.
 const H_REF = 300.0
 
-# Fixed creep parameters, Pa⁻³ yr⁻¹, read straight off the same fitted polynomial
-# A_TEMPERATE comes from (Huginn.polyA_PatersonCuffey(), Laws.jl), rather than hand-transcribed
-# decimals: 0 to -20 °C spans 7.57e-17 down to 3.79e-18, about 20x, all real Cuffey & Paterson
-# (2010) table entries rather than round numbers that happen to fall between rows.
-const A_POLY = Huginn.polyA_PatersonCuffey()
-const A_LADDER = [
-    ("temperate", A_TEMPERATE),   # Cuffey & Paterson at 0 °C   -- matches A_POLY(0.0)
-    ("m5C", A_POLY(-5.0)),        # Cuffey & Paterson at -5 °C
-    ("m10C", A_POLY(-10.0)),      # Cuffey & Paterson at -10 °C
-    ("m15C", A_POLY(-15.0)),      # Cuffey & Paterson at -15 °C
-    ("m20C", A_POLY(-20.0)),      # Cuffey & Paterson at -20 °C
-]
+# A_LADDER (and A_from_name) are defined in common.jl, shared with 02_lambda_sweep.jl.
 
-C_scale = sliding_scale(LAW, A_TEMPERATE, H_REF)
+C_scale = Huginn.sliding_scale(A_TEMPERATE, H_REF; p = LAW.p, q = LAW.q)
 maxC = 8 * C_scale
 
 probe = build_params(; tspan = (2009.0, 2018.0), t₀ = 2009.0, maxC = maxC,
@@ -74,9 +66,26 @@ results = DataFrame(
 )
 
 C_fields = Dict{String, Matrix{Float64}}()
+# One Results per rung, so `05_diagnostics.jl` can render the observation-comparison and
+# histogram plots later without re-running the ladder.
+results_by_rung = Dict{String, Sleipnir.Results}()
 
 V_ref = only(glacier.velocityData.vabs)
 mask_V = V_ref .> 0.0
+
+# Real Millan22 uncertainty when the glacier's cache has it (mean over ice-covered cells of
+# the per-pixel err_vx/err_vy field -- see Sleipnir's _process_Millan22_error). Falls back to
+# a labelled placeholder, rather than erroring, for any glacier whose gridded_data.nc predates
+# requesting the error bands (OGGM's add_error flag) or hasn't been backfilled yet.
+verr = glacier.velocityData.vabs_error
+σ_V = if isnothing(verr)
+    @warn "No real Millan22 uncertainty for $(RGI_ID); using a 10.0 m/yr placeholder. Regenerate its gridded_data.nc with add_error=true to fix this."
+    10.0
+else
+    only(verr)
+end
+@info "λ_V weight" σ_V real=!isnothing(verr)
+
 H_obs = last(series.H)
 mask_H = H_obs .!= 0
 
@@ -96,12 +105,14 @@ for (name, A_value) in A_LADDER
     elapsed = @elapsed run!(inversion)
 
     C = inverted_C(inversion)
-    frac = sliding_fraction(C, Huginn.inn1(glacier.H₀), A_value)
+    # basis = :surface: this is compared against Millan22, a surface velocity observation.
+    frac = Huginn.sliding_fraction(C, Huginn.inn1(glacier.H₀), A_value;
+        p = LAW.p, q = LAW.q, basis = :surface)
     # Every C statistic is taken over cells that carry ice. Over the full grid they are
-    # meaningless: most staggered cells are ice free, contribute to no loss term, keep their
-    # seed forever, and make `sliding_fraction` return exactly 1 because deformation is 0
-    # there. `roughness`/`reg_C` stay unmasked, since the loss computes them over the whole
-    # grid. See `ice_mask_C` in common.jl.
+    # meaningless: most staggered cells are ice free, contribute to no loss term, and keep
+    # their seed forever (`sliding_fraction` already returns NaN there). `roughness`/`reg_C`
+    # stay unmasked, since the loss computes them over the whole grid. See `ice_mask_C` in
+    # common.jl.
     msk = ice_mask_C(glacier)
     Cm = C[msk]
     fracm = frac[msk]
@@ -125,12 +136,14 @@ for (name, A_value) in A_LADDER
         mean(fracm), median(fracm), v_rmse, h_rmse, elapsed,
     ))
     C_fields[name] = C
+    results_by_rung[name] = res
 
     @info "Result" A=A_value C_mean=mean(Cm) at_bound=mean(Cm .> 0.95*maxC) slide_frac=round(median(fracm); digits=3) v_rmse=round(v_rmse; digits=2) seconds=round(elapsed; digits=1)
 
-    CSV.write(joinpath(OUT_DIR, "03_A_ladder_$(TAG).csv"), results)
-    jldsave(joinpath(OUT_DIR, "03_A_ladder_fields_$(TAG).jld2");
-        C_fields, ladder = A_LADDER, λ_C, maxC, law = LAW)
+    CSV.write(joinpath(RUN_DIR, "summary.csv"), results)
+    jldsave(joinpath(FIELDS_DIR, "C_fields.jld2");
+        C_fields, results_by_rung, glacier,
+        ladder = A_LADDER, λ_C, maxC, law = LAW)
 
     f = Figure(size = (1300, 450))
     ax1 = Axis(f[1, 1], title = "C", aspect = DataAspect())
@@ -146,7 +159,7 @@ for (name, A_value) in A_LADDER
     Label(f[0, :],
         "$(LAW_NAME)   A = $(round(A_value*1e17; digits=2))e-17 ($(name))   |   V RMSE = $(round(v_rmse; digits=2)) m/yr";
         fontsize = 17, font = :bold)
-    save(joinpath(OUT_DIR, "03_A_ladder_$(TAG)_$(name).pdf"), f)
+    save(joinpath(RUNGS_DIR, "$(name).pdf"), f)
 end
 
 fig = Figure(size = (400 * length(A_LADDER), 460))
@@ -159,12 +172,12 @@ for (k, (name, A_value)) in enumerate(A_LADDER)
 end
 Label(fig[0, :], "Inverted C across the A ladder — $(RGI_ID), $(LAW_NAME)";
     fontsize = 20, font = :bold)
-save(joinpath(OUT_DIR, "03_A_ladder_$(TAG)_comparison.pdf"), fig)
+save(joinpath(RUN_DIR, "comparison.pdf"), fig)
 
 fig2 = Figure(size = (900, 500))
 ax = Axis(fig2[1, 1], xlabel = "A  (Pa⁻³ yr⁻¹)", ylabel = "median sliding fraction",
     xscale = log10, title = "Share of SIA diffusivity carried by sliding — $(LAW_NAME)")
 scatterlines!(ax, results.A, results.slide_frac_median; markersize = 14)
-save(joinpath(OUT_DIR, "03_A_ladder_$(TAG)_sliding_fraction.pdf"), fig2)
+save(joinpath(RUN_DIR, "sliding_fraction.pdf"), fig2)
 
 println(results)

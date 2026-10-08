@@ -21,7 +21,7 @@ const GSF = 3                 # coarser grid keeps the validation cheap
 const TSPAN = (2010.0, 2012.0)
 const MAXC = 2e-14
 
-mkpath(OUT_DIR)
+const RUN_DIR = run_dir("01_synthetic_C")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Ground truth with a known, spatially variable C
@@ -134,10 +134,10 @@ Label(fig[0, :],
     "mean rel. err = $(round(100*mean(rel_err); digits = 1))%";
     fontsize = 18, font = :bold)
 
-save(joinpath(OUT_DIR, "01_synthetic_C.pdf"), fig)
-@info "Figure written" path=joinpath(OUT_DIR, "01_synthetic_C.pdf")
+save(joinpath(RUN_DIR, "synthetic_C.pdf"), fig)
+@info "Figure written" path=joinpath(RUN_DIR, "synthetic_C.pdf")
 
-open(joinpath(OUT_DIR, "01_synthetic_C_timings.csv"), "w") do io
+open(joinpath(RUN_DIR, "timings.csv"), "w") do io
     println(io, "stage,seconds")
     println(io, "ground_truth,$(round(t_gt; digits = 2))")
     println(io, "inversion,$(round(t_inv; digits = 2))")

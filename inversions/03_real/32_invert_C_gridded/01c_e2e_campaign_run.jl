@@ -40,7 +40,8 @@ const LBFGS_LS = get(ENV, "LBFGS_LS", "backtracking")
 const UNIT_WEIGHTS = get(ENV, "LOSS_SCALE", "sigma") == "unit"
 alphaguess = LBFGS_INIT == "scaled" ?
              ODINN.LineSearches.InitialStatic(alpha = 1.0, scaled = true) :
-             LBFGS_INIT == "hagerzhang" ? ODINN.LineSearches.InitialHagerZhang() :
+             # α0 = NaN, or the first step is not sized from ‖θ‖/‖g‖
+             LBFGS_INIT == "hagerzhang" ? ODINN.LineSearches.InitialHagerZhang(α0 = NaN) :
              ODINN.LineSearches.InitialStatic()
 linesearch = LBFGS_LS == "hagerzhang" ? ODINN.LineSearches.HagerZhang() :
              ODINN.LineSearches.BackTracking(iterations = 5)

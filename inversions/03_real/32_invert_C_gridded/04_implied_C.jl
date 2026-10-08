@@ -28,7 +28,7 @@ using CSV
 using DataFrames
 using Printf
 
-mkpath(OUT_DIR)
+const RUN_DIR = run_dir("04_implied_C")
 
 const A_LADDER = [
     ("temperate", A_TEMPERATE),   # Cuffey & Paterson (2010) at 0 °C
@@ -98,7 +98,7 @@ for (law_name, law) in pairs(SLIDING_LAWS), (A_name, A) in A_LADDER
         isempty(pos) ? NaN : median(pos), sf)
 end
 
-CSV.write(joinpath(OUT_DIR, "04_implied_C.csv"), results)
+CSV.write(joinpath(RUN_DIR, "summary.csv"), results)
 
 # One panel per A, per law: where is sliding possible at all, and how much
 for law_name in ("weertman", "budd")
@@ -118,7 +118,7 @@ for law_name in ("weertman", "budd")
         "Sliding coefficient implied by SIA + Millan22 observations — $(RGI_ID), $(law_name)" *
         "  (red = negative, SIA already too fast)";
         fontsize = 19, font = :bold)
-    save(joinpath(OUT_DIR, "04_implied_C_$(law_name).pdf"), fig)
+    save(joinpath(RUN_DIR, "$(law_name).pdf"), fig)
 end
 
 # The headline curve: how much of the glacier cannot accommodate any sliding
@@ -131,7 +131,7 @@ for law_name in ("weertman", "budd")
     scatterlines!(ax, sub.A, sub.frac_negative; markersize = 13, label = law_name)
 end
 axislegend(ax; position = :rt)
-save(joinpath(OUT_DIR, "04_implied_C_negative_fraction.pdf"), fig)
+save(joinpath(RUN_DIR, "negative_fraction.pdf"), fig)
 
 println()
 println(results)

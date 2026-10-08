@@ -18,7 +18,7 @@ using Printf
 using Statistics
 
 const RGI_ID = "RGI60-11.01450"   # Aletsch
-const OUT_DIR = joinpath(@__DIR__, "outputs")
+const OUT_DIR = joinpath(@__DIR__, "outputs", "00_smoke_forward")
 mkpath(OUT_DIR)
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -109,7 +109,7 @@ end
 Label(fig[0, :], "Phase 0 — forward smoke test, $(RGI_ID), A = temperate, C = 0";
     fontsize = 18, font = :bold)
 
-pdf_path = joinpath(OUT_DIR, "00_smoke_forward.pdf")
+pdf_path = joinpath(OUT_DIR, "forward.pdf")
 save(pdf_path, fig)
 @info "Figure written" pdf_path
 
@@ -117,7 +117,7 @@ save(pdf_path, fig)
 # Timing summary — every adjoint epoch pays the forward cost at least twice
 # ─────────────────────────────────────────────────────────────────────────────
 
-open(joinpath(OUT_DIR, "00_smoke_timings.csv"), "w") do io
+open(joinpath(OUT_DIR, "timings.csv"), "w") do io
     println(io, "stage,seconds")
     println(io, "initialize_glaciers,$(round(t_init; digits = 2))")
     println(io, "calibrate_MB_model,$(round(t_calib; digits = 2))")

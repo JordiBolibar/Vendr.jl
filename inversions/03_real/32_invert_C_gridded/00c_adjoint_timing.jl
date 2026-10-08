@@ -14,7 +14,7 @@ include(joinpath(@__DIR__, "common.jl"))
 
 using Printf
 
-mkpath(OUT_DIR)
+const RUN_DIR = run_dir("00c_adjoint_timing")
 
 rows = Tuple{Int, Int, Float64, Float64, Float64}[]
 
@@ -55,7 +55,7 @@ for gsf in (1, 2, 3)
     flush(stdout)
 end
 
-open(joinpath(OUT_DIR, "00c_adjoint_timing.csv"), "w") do io
+open(joinpath(RUN_DIR, "timing.csv"), "w") do io
     println(io, "gsf,cells,init_s,forward_s,epoch_s")
     for (gsf, n, ti, tf, te) in rows
         println(io, "$(gsf),$(n),$(round(ti; digits = 2)),$(round(tf; digits = 2)),$(round(te; digits = 2))")
