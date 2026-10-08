@@ -34,6 +34,12 @@ const RUN_ROOT = dirname(dirname(FIELDS_PATH))   # .../<script>/<tag>/fields/…
 const PLOTS_DIR = joinpath(RUN_ROOT, "diagnostics")
 mkpath(PLOTS_DIR)
 
+# PDF for the papers, and a high resolution PNG to look at
+function save_pdf_png(dir, name, fig)
+    save(joinpath(dir, name * ".pdf"), fig)
+    save(joinpath(dir, name * ".png"), fig; px_per_unit = 3)
+end
+
 saved = JLD2.load(FIELDS_PATH)
 is_ladder = haskey(saved, "results_by_rung")
 C_fields = saved["C_fields"]
@@ -64,25 +70,25 @@ for key in keys_sorted
 
     fig_H = plot_glacier_vs_observations(res, glacier, :H;
         title = "H — $(label_for(key))")
-    save(joinpath(kdir, "H_vs_obs.pdf"), fig_H)
+    save_pdf_png(kdir, "H_vs_obs", fig_H)
 
     fig_V = plot_glacier_vs_observations(res, glacier, :V; aggregate = :mean,
         title = "V — $(label_for(key))")
-    save(joinpath(kdir, "V_vs_obs.pdf"), fig_V)
+    save_pdf_png(kdir, "V_vs_obs", fig_V)
 
     fig_Chist = plot_field_histogram(C;
         references = ["sliding = deformation (H=300m)" => C_scale,
             "0.5×crossover" => 0.5 * C_scale, "maxC" => maxC],
         mask = ice_mask_C(glacier), logScale = true,
         xlabel = "C", title = "Inverted C — $(label_for(key))")
-    save(joinpath(kdir, "C_histogram.pdf"), fig_Chist)
+    save_pdf_png(kdir, "C_histogram", fig_Chist)
 
     frac = Huginn.sliding_fraction(C, Huginn.inn1(glacier.H₀), A_value;
         p = law.p, q = law.q, basis = :surface)
     fig_frac = plot_field_histogram(frac;
         mask = ice_mask_C(glacier),
         xlabel = "sliding fraction (surface)", title = "Sliding share — $(label_for(key))")
-    save(joinpath(kdir, "sliding_fraction_histogram.pdf"), fig_frac)
+    save_pdf_png(kdir, "sliding_fraction_histogram", fig_frac)
 end
 
 # Summary across configurations, Lisa's Fig. 6 idiom: one bar per configuration.
@@ -99,6 +105,6 @@ ax = Axis(fig_summary[1, 1], ylabel = "median sliding fraction (surface)",
     xticks = (1:length(keys_sorted), label_for.(keys_sorted)),
     title = "Sliding share across the run — $(RGI_ID), $(law.p == 3.0 && law.q == 0.0 ? "weertman" : "budd")")
 barplot!(ax, 1:length(keys_sorted), [summary_stat[k] for k in keys_sorted])
-save(joinpath(PLOTS_DIR, "summary_sliding_fraction.pdf"), fig_summary)
+save_pdf_png(PLOTS_DIR, "summary_sliding_fraction", fig_summary)
 
 @info "Diagnostics written" dir=PLOTS_DIR
